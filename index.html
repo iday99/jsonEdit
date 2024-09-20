@@ -1,0 +1,390 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSON 数据查看器</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f4f4f4;
+            padding-top: 100px; /* 为固定的控制面板留出空间 */
+        }
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+        }
+        .control-panel {
+            position: fixed; /* 固定在顶部 */
+            top: 0;
+            left: 50%; /* 居中对齐 */
+            transform: translateX(-50%); /* 调整位置 */
+            right: auto; /* 取消右侧对齐 */
+            z-index: 1000; /* 确保在其他内容之上 */
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        input[type="file"], input[type="text"], button {
+            margin: 5px;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #2980b9;
+        }
+        table {
+            width: 100%;
+            table-layout: fixed; /* 使用固定表格布局 */
+            border-collapse: collapse;
+            background-color: #fff;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+            overflow: hidden; /* 防止内容溢出 */
+        }
+        th {
+            background-color: #f2f2f2;
+            font-weight: bold;
+        }
+        .column-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .delete-column, .delete-row {
+            color: #e74c3c;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .editable {
+            width: 100%;
+            box-sizing: border-box;
+            resize: none; /* 禁用手动调整大小 */
+            overflow: hidden; /* 隐藏滚动条 */
+            min-height: 20px; /* 设置最小高度 */
+            line-height: 20px; /* 与min-height匹配 */
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            padding: 5px;
+        }
+        td {
+            vertical-align: top; /* 让内容从顶部开始对齐 */
+        }
+        .image-preview {
+            max-width: 100%;
+            max-height: 100px;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- 删除标题 -->
+        <!-- <h1>JSON 数据查看器</h1> -->
+        <div class="control-panel">
+            <input type="file" @change="handleFileSelect" accept=".json">
+            <select v-if="jsonStructure.length > 0" v-model="selectedProperty">
+                <option value="">选择要处理的属性</option>
+                <option v-for="prop in jsonStructure" :key="prop" :value="prop">{{ prop }}</option>
+            </select>
+            <button @click="loadData" :disabled="!selectedProperty">加载数据</button>
+            <input type="text" v-model="newColumnName" placeholder="新列名">
+            <button @click="addNewColumn">添加列</button>
+            <button @click="addNewRow">添加行</button>
+            <button @click="exportJSON">导出 JSON</button>
+        </div>
+        <div class="table-container">
+            <table v-if="currentData && currentData.searchResults">
+                <thead>
+                    <tr>
+                        <th style="width: 30px;"></th>
+                        <th v-for="column in columns" :key="column">
+                            <div class="column-header">
+                                {{ column }}
+                                <span class="delete-column" @click="deleteColumn(column)">x</span>
+                            </div>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr v-for="(row, rowIndex) in Array.isArray(currentData.searchResults) ? currentData.searchResults : [currentData.searchResults]" :key="rowIndex">
+                        <td>
+                            <span class="delete-row" @click="deleteRow(rowIndex)">x</span>
+                        </td>
+                        <td v-for="column in columns" :key="column">
+                            <textarea class="editable" 
+                                      v-model="row[column]" 
+                                      @input="autoResize($event)"
+                                      @change="updateCellValue(rowIndex, column, row[column])"></textarea>
+                            <img v-if="isValidImageUrl(row[column])" :src="row[column]" class="image-preview" @error="handleImageError">
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+<!-- 删除或注释掉这部分 -->
+<!--
+<div v-if="currentData">
+    <p>Debug: Columns: {{ columns }}</p>
+    <p>Debug: Data: {{ JSON.stringify(currentData.searchResults) }}</p>
+</div>
+-->
+    </div>
+
+    <script>
+    const { createApp, ref, computed, onMounted } = Vue;
+
+    createApp({
+        setup() {
+            const originalData = ref(null);
+            const currentData = ref(null);
+            const newColumnName = ref('');
+            const jsonStructure = ref([]);
+            const selectedProperty = ref('');
+            const fileContent = ref(null);
+
+            const columns = computed(() => {
+                if (!currentData.value || !currentData.value.searchResults) return [];
+                const allColumns = new Set();
+                const dataArray = Array.isArray(currentData.value.searchResults) 
+                    ? currentData.value.searchResults 
+                    : [currentData.value.searchResults];
+                dataArray.forEach(item => {
+                    Object.keys(item).forEach(key => allColumns.add(key));
+                });
+                return Array.from(allColumns);
+            });
+
+            function handleFileSelect(event) {
+                const file = event.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        try {
+                            fileContent.value = JSON.parse(e.target.result);
+                            jsonStructure.value = Object.keys(fileContent.value);
+                            selectedProperty.value = '';
+                            currentData.value = null;
+                        } catch (error) {
+                            console.error('解析 JSON 时出错:', error);
+                            alert('解析 JSON 文件时出错');
+                        }
+                    };
+                    reader.readAsText(file);
+                } else {
+                    alert('请选择一个文件');
+                }
+            }
+
+            function loadData() {
+                if (!selectedProperty.value || !fileContent.value) {
+                    alert('请选择要处理的属性');
+                    return;
+                }
+
+                originalData.value = JSON.parse(JSON.stringify(fileContent.value)); // 深拷贝
+                const selectedData = fileContent.value[selectedProperty.value];
+                if (Array.isArray(selectedData) || typeof selectedData === 'object') {
+                    currentData.value = { searchResults: selectedData };
+                } else {
+                    alert('选择的属性不是数组或对象，无法处理');
+                    return;
+                }
+                console.log('Loaded data:', currentData.value);
+            }
+
+            function updateCellValue(rowIndex, column, value) {
+                if (currentData.value && Array.isArray(currentData.value.searchResults)) {
+                    currentData.value.searchResults[rowIndex][column] = value;
+                    saveData();
+                }
+            }
+
+            function deleteColumn(columnName) {
+                if (confirm(`确定要删除列 "${columnName}" 吗？`)) {
+                    if (currentData.value && Array.isArray(currentData.value.searchResults)) {
+                        currentData.value.searchResults.forEach(item => {
+                            delete item[columnName];
+                        });
+                        if (columnName in currentData.value) {
+                            delete currentData.value[columnName];
+                        }
+                        saveData();
+                    }
+                }
+            }
+
+            function deleteRow(rowIndex) {
+                if (confirm(`确定要删除第 ${rowIndex + 1} 行吗？`)) {
+                    if (currentData.value && Array.isArray(currentData.value.searchResults)) {
+                        currentData.value.searchResults.splice(rowIndex, 1);
+                        saveData();
+                    }
+                }
+            }
+
+            function addNewColumn() {
+                if (!newColumnName.value) {
+                    alert('请输入列名');
+                    return;
+                }
+
+                if (!currentData.value || !Array.isArray(currentData.value.searchResults)) {
+                    alert('请先加载有效的 JSON 文件');
+                    return;
+                }
+
+                currentData.value.searchResults.forEach(item => {
+                    if (!(newColumnName.value in item)) {
+                        item[newColumnName.value] = '';
+                    }
+                });
+
+                saveData();
+                newColumnName.value = '';
+            }
+
+            function addNewRow() {
+                if (!currentData.value || !Array.isArray(currentData.value.searchResults)) {
+                    alert('请先加载有效的 JSON 文件');
+                    return;
+                }
+
+                const newRow = {};
+                columns.value.forEach(column => {
+                    newRow[column] = '';
+                });
+
+                currentData.value.searchResults.push(newRow);
+                saveData();
+            }
+
+            function saveData() {
+                if (!originalData.value || !currentData.value || !selectedProperty.value) {
+                    console.error('没有原始数据或当前数据');
+                    return;
+                }
+
+                const updatedData = JSON.parse(JSON.stringify(originalData.value));
+                updatedData[selectedProperty.value] = currentData.value.searchResults;
+
+                // 尝试保存到服务器
+                fetch('/save_data', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(updatedData)
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Server save failed');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.status === 'success') {
+                        console.log('数据成功保存到服务器');
+                    } else {
+                        throw new Error('Server save failed');
+                    }
+                })
+                .catch((error) => {
+                    console.error('保存到服务器失败，正在尝试本地存储:', error);
+                    try {
+                        localStorage.setItem('jsonEditorData', JSON.stringify(updatedData));
+                        console.log('数据成功保存到本地存储');
+                    } catch (localError) {
+                        console.error('保存到本地存储也失败:', localError);
+                    }
+                });
+            }
+
+            function exportJSON() {
+                if (!originalData.value || !currentData.value || !selectedProperty.value) {
+                    alert('没有可导出的数据。请先加载 JSON 文件。');
+                    return;
+                }
+
+                const exportData = JSON.parse(JSON.stringify(originalData.value));
+                exportData[selectedProperty.value] = currentData.value.searchResults;
+
+                const jsonString = JSON.stringify(exportData, null, 2);
+                const blob = new Blob([jsonString], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'exported_data.json';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+
+            function autoResize(event) {
+                event.target.style.height = 'auto';
+                event.target.style.height = event.target.scrollHeight + 'px';
+            }
+
+            function isValidImageUrl(url) {
+                return typeof url === 'string' && url.match(/\.(jpeg|jpg|gif|png)$/) != null;
+            }
+
+            function handleImageError(event) {
+                event.target.style.display = 'none';
+            }
+
+            onMounted(() => {
+                console.log('页面已加载，等待文件选择...');
+            });
+
+            return {
+                originalData,
+                currentData,
+                newColumnName,
+                columns,
+                jsonStructure,
+                selectedProperty,
+                handleFileSelect,
+                loadData,
+                updateCellValue,
+                deleteColumn,
+                deleteRow,
+                addNewColumn,
+                addNewRow,
+                saveData,
+                exportJSON,
+                autoResize,
+                isValidImageUrl,
+                handleImageError
+            };
+        }
+    }).mount('#app');
+    </script>
+</body>
+</html>
