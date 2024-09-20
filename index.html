@@ -15,7 +15,7 @@
             margin: 0 auto;
             padding: 20px;
             background-color: #f4f4f4;
-            padding-top: 100px; /* 为固定的控制面板留出空间 */
+            padding-top: 80px; /* 为固定的控制面板留出空间 */
         }
         h1 {
             text-align: center;
@@ -33,22 +33,53 @@
             border-radius: 5px;
             box-shadow: 0 2px 5px rgba(0,0,0,0.1);
             margin-bottom: 20px;
+            width: 90%;
+            max-width: 1200px;
         }
-        input[type="file"], input[type="text"], button {
+        input[type="file"], input[type="text"], button, select {
             margin: 5px;
             padding: 8px 12px;
             border: 1px solid #ddd;
             border-radius: 4px;
+            font-size: 14px;
         }
-        button {
+        input[type="text"] {
+            width: 120px; /* 缩小输入新列名的文本框的宽度 */
+        }
+        select {
+            background-color: #fff;
+            color: #333;
+            cursor: pointer;
+        }
+        select:hover {
+            border-color: #3498db;
+        }
+        select:focus {
+            outline: none;
+            border-color: #3498db;
+            box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+        }
+        .control-panel button {
             background-color: #3498db;
             color: white;
             border: none;
             cursor: pointer;
-            transition: background-color 0.3s;
+            transition: background-color 0.3s, box-shadow 0.3s;
+            margin: 5px;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 14px;
         }
-        button:hover {
+        .control-panel button:hover {
             background-color: #2980b9;
+        }
+        .control-panel button.active {
+            background-color: #2c3e50;
+            box-shadow: 0 0 0 2px #f39c12;
+        }
+        .control-panel button:disabled {
+            background-color: #bdc3c7;
+            cursor: not-allowed;
         }
         table {
             width: 100%;
@@ -83,9 +114,9 @@
         .editable {
             width: 100%;
             box-sizing: border-box;
-            resize: none; /* 禁用手动调整大小 */
+            resize: vertical; /* 允许垂直调整大小 */
             overflow: hidden; /* 隐藏滚动条 */
-            min-height: 20px; /* 设置最小高度 */
+            min-height: 60px; /* 设置最小高度 */
             line-height: 20px; /* 与min-height匹配 */
             border: 1px solid #ddd;
             border-radius: 3px;
@@ -93,11 +124,57 @@
         }
         td {
             vertical-align: top; /* 让内容从顶部开始对齐 */
+            position: relative; /* 添加相对定位 */
+            padding: 5px; /* 减小默认内边距 */
+        }
+        .cell-content {
+            display: flex; /* 使用flex布局 */
+            align-items: flex-start;
+        }
+        .editable {
+            flex: 1;
+            min-height: 60px;
+            resize: vertical;
+            margin-right: 5px; /* 在编辑框和图片预览之间添加一些间距 */
+        }
+        .image-preview-container {
+            width: 100px;
+            height: 100px;
+            position: absolute;
+            right: 5px;
+            top: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            background-color: #f0f0f0;
+            border: 1px solid #ddd;
         }
         .image-preview {
             max-width: 100%;
-            max-height: 100px;
-            margin-top: 5px;
+            max-height: 100%;
+            object-fit: contain;
+        }
+        td.with-image {
+            padding-right: 110px; /* 只有在有图片时才添加较大的右内边距 */
+        }
+        .checkbox-container {
+            display: inline-flex;
+            align-items: center;
+            margin: 5px;
+            color: #333; /* 设置文字颜色与其他控制元素一致 */
+        }
+        .checkbox-container input[type="checkbox"] {
+            margin-right: 5px;
+        }
+        .draggable {
+            cursor: move;
+        }
+        .dragging {
+            opacity: 0.5;
+        }
+        .drag-over {
+            border: 2px dashed #3498db;
         }
     </style>
 </head>
@@ -114,6 +191,10 @@
             <button @click="loadData" :disabled="!selectedProperty">加载数据</button>
             <input type="text" v-model="newColumnName" placeholder="新列名">
             <button @click="addNewColumn">添加列</button>
+            <div class="checkbox-container">
+                <input type="checkbox" id="reverseAdd" v-model="reverseAdd">
+                <label for="reverseAdd">反向</label>
+            </div>
             <button @click="addNewRow">添加行</button>
             <button @click="exportJSON">导出 JSON</button>
         </div>
@@ -122,7 +203,15 @@
                 <thead>
                     <tr>
                         <th style="width: 30px;"></th>
-                        <th v-for="column in columns" :key="column">
+                        <th v-for="(column, columnIndex) in columns" 
+                            :key="column" 
+                            draggable="true"
+                            @dragstart="dragStartColumn($event, columnIndex)"
+                            @dragover.prevent
+                            @dragenter="dragEnterColumn($event, columnIndex)"
+                            @dragleave="dragLeaveColumn($event)"
+                            @drop="dropColumn($event, columnIndex)"
+                            :class="{ draggable: true, 'drag-over': dragOverColumnIndex === columnIndex }">
                             <div class="column-header">
                                 {{ column }}
                                 <span class="delete-column" @click="deleteColumn(column)">x</span>
@@ -131,16 +220,28 @@
                     </tr>
                 </thead>
                 <tbody>
-                    <tr v-for="(row, rowIndex) in Array.isArray(currentData.searchResults) ? currentData.searchResults : [currentData.searchResults]" :key="rowIndex">
+                    <tr v-for="(row, rowIndex) in currentData.searchResults" 
+                        :key="rowIndex"
+                        draggable="true"
+                        @dragstart="dragStartRow($event, rowIndex)"
+                        @dragover.prevent
+                        @dragenter="dragEnterRow($event, rowIndex)"
+                        @dragleave="dragLeaveRow($event)"
+                        @drop="dropRow($event, rowIndex)"
+                        :class="{ draggable: true, 'drag-over': dragOverRowIndex === rowIndex }">
                         <td>
                             <span class="delete-row" @click="deleteRow(rowIndex)">x</span>
                         </td>
-                        <td v-for="column in columns" :key="column">
-                            <textarea class="editable" 
-                                      v-model="row[column]" 
-                                      @input="autoResize($event)"
-                                      @change="updateCellValue(rowIndex, column, row[column])"></textarea>
-                            <img v-if="isValidImageUrl(row[column])" :src="row[column]" class="image-preview" @error="handleImageError">
+                        <td v-for="column in columns" :key="column" :class="{ 'with-image': isValidImageUrl(row[column]) }">
+                            <div class="cell-content">
+                                <textarea class="editable" 
+                                          v-model="row[column]" 
+                                          @input="autoResize($event)"
+                                          @change="updateCellValue(rowIndex, column, row[column])"></textarea>
+                                <div v-if="isValidImageUrl(row[column])" class="image-preview-container">
+                                    <img :src="row[column]" class="image-preview" @error="handleImageError">
+                                </div>
+                            </div>
                         </td>
                     </tr>
                 </tbody>
@@ -166,14 +267,15 @@
             const jsonStructure = ref([]);
             const selectedProperty = ref('');
             const fileContent = ref(null);
+            const reverseAdd = ref(false);
+            const columnOrder = ref([]); // 新增：用于保持列的顺序
+            const dragOverColumnIndex = ref(null);
+            const dragOverRowIndex = ref(null);
 
             const columns = computed(() => {
                 if (!currentData.value || !currentData.value.searchResults) return [];
-                const allColumns = new Set();
-                const dataArray = Array.isArray(currentData.value.searchResults) 
-                    ? currentData.value.searchResults 
-                    : [currentData.value.searchResults];
-                dataArray.forEach(item => {
+                const allColumns = new Set(columnOrder.value);
+                currentData.value.searchResults.forEach(item => {
                     Object.keys(item).forEach(key => allColumns.add(key));
                 });
                 return Array.from(allColumns);
@@ -215,6 +317,11 @@
                     return;
                 }
                 console.log('Loaded data:', currentData.value);
+
+                // 初始化列顺序
+                if (currentData.value && Array.isArray(currentData.value.searchResults) && currentData.value.searchResults.length > 0) {
+                    columnOrder.value = Object.keys(currentData.value.searchResults[0]);
+                }
             }
 
             function updateCellValue(rowIndex, column, value) {
@@ -264,8 +371,19 @@
                     }
                 });
 
+                // 更新列顺序
+                if (reverseAdd.value) {
+                    columnOrder.value.unshift(newColumnName.value);
+                } else {
+                    columnOrder.value.push(newColumnName.value);
+                }
+
                 saveData();
                 newColumnName.value = '';
+            }
+
+            function toggleReverseAdd() {
+                reverseAdd.value = !reverseAdd.value;
             }
 
             function addNewRow() {
@@ -279,7 +397,11 @@
                     newRow[column] = '';
                 });
 
-                currentData.value.searchResults.push(newRow);
+                if (reverseAdd.value) {
+                    currentData.value.searchResults.unshift(newRow);
+                } else {
+                    currentData.value.searchResults.push(newRow);
+                }
                 saveData();
             }
 
@@ -348,7 +470,7 @@
 
             function autoResize(event) {
                 event.target.style.height = 'auto';
-                event.target.style.height = event.target.scrollHeight + 'px';
+                event.target.style.height = (event.target.scrollHeight + 2) + 'px';
             }
 
             function isValidImageUrl(url) {
@@ -357,6 +479,57 @@
 
             function handleImageError(event) {
                 event.target.style.display = 'none';
+            }
+
+            function dragStartColumn(event, columnIndex) {
+                event.dataTransfer.setData('text/plain', columnIndex);
+                event.target.classList.add('dragging');
+            }
+
+            function dragEnterColumn(event, columnIndex) {
+                dragOverColumnIndex.value = columnIndex;
+            }
+
+            function dragLeaveColumn(event) {
+                event.target.classList.remove('drag-over');
+            }
+
+            function dropColumn(event, targetIndex) {
+                const sourceIndex = parseInt(event.dataTransfer.getData('text/plain'));
+                if (sourceIndex !== targetIndex) {
+                    const newOrder = [...columnOrder.value];
+                    const [removed] = newOrder.splice(sourceIndex, 1);
+                    newOrder.splice(targetIndex, 0, removed);
+                    columnOrder.value = newOrder;
+                }
+                dragOverColumnIndex.value = null;
+                event.target.classList.remove('drag-over');
+            }
+
+            function dragStartRow(event, rowIndex) {
+                event.dataTransfer.setData('text/plain', rowIndex);
+                event.target.classList.add('dragging');
+            }
+
+            function dragEnterRow(event, rowIndex) {
+                dragOverRowIndex.value = rowIndex;
+            }
+
+            function dragLeaveRow(event) {
+                event.target.classList.remove('drag-over');
+            }
+
+            function dropRow(event, targetIndex) {
+                const sourceIndex = parseInt(event.dataTransfer.getData('text/plain'));
+                if (sourceIndex !== targetIndex) {
+                    const newData = [...currentData.value.searchResults];
+                    const [removed] = newData.splice(sourceIndex, 1);
+                    newData.splice(targetIndex, 0, removed);
+                    currentData.value.searchResults = newData;
+                    saveData();
+                }
+                dragOverRowIndex.value = null;
+                event.target.classList.remove('drag-over');
             }
 
             onMounted(() => {
@@ -376,12 +549,25 @@
                 deleteColumn,
                 deleteRow,
                 addNewColumn,
+                toggleReverseAdd,
                 addNewRow,
                 saveData,
                 exportJSON,
                 autoResize,
                 isValidImageUrl,
-                handleImageError
+                handleImageError,
+                reverseAdd,
+                columnOrder,
+                dragOverColumnIndex,
+                dragOverRowIndex,
+                dragStartColumn,
+                dragEnterColumn,
+                dragLeaveColumn,
+                dropColumn,
+                dragStartRow,
+                dragEnterRow,
+                dragLeaveRow,
+                dropRow
             };
         }
     }).mount('#app');
